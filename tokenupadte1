@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract SafeMoneyUp is ERC20, Ownable {
+    using SafeMath for uint256;
+
+    uint256 private constant DECIMALS_MULTIPLIER = 10**18;
+    uint256 public initialTokenPriceInWei = 100000000000000;
+    bool public initialPurchaseMade;
+    mapping(address => uint256) public referralRewards;
+    mapping(address => bool) public blacklist;
+
+    uint256 public adminFeeBalance;
+
+    constructor() ERC20("SafeMoney Up", "SMU") {
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    modifier notBlacklisted(address _address) {
+        require(!blacklist[_address], "Address is blacklisted.");
+        _;
+    }
+
+    // Fallback function to receive Ether
+    receive() external payable {}
+
+    function buyTokens(address referral) public payable notBlacklisted(msg.sender) {
+        require(msg.value > 0, "BNB/Ether amount must be greater than zero.");
+        require(referral != msg.sender, "Referral cannot be the same as the buyer.");
+
+        uint256 tokenPriceInWei = getTokenPriceInWei();
+        uint256 tokenAmount = (msg.value.mul(DECIMALS_MULTIPLIER)).div(tokenPriceInWei);
+
+        uint256 tokensToMintWithFee = tokenAmount.mul(90).div(100);
+        _mint(msg.sender, tokensToMintWithFee);
+
+        uint256 adminFee = msg.value.mul(2).div(100);
+        adminFeeBalance = adminFeeBalance.add(adminFee);
+
+        if (referral != address(0)) {
+            uint256 referralReward = msg.value.mul(1).div(100);
+            referralRewards[referral] = referralRewards[referral].add(referralReward);
+        }
+
+        initialPurchaseMade = true;
+    }
+
+    function sellTokens(uint256 tokenAmount) public notBlacklisted(msg.sender) {
+    require(tokenAmount > 0, "Token amount must be greater than zero.");
+    require(balanceOf(msg.sender) >= tokenAmount, "Not enough tokens to sell.");
+
+    uint256 tokenPriceInWei = getTokenPriceInWei();
+    uint256 etherToReturn = (tokenAmount.mul(tokenPriceInWei)).div(DECIMALS_MULTIPLIER);
+    uint256 fee = etherToReturn.mul(10).div(100); // 10% fee
+    uint256 adminFee = fee.mul(2).div(10); // 2% of total fee
+    uint256 etherToReturnAfterFee = etherToReturn.sub(fee);
+
+    require(address(this).balance >= etherToReturnAfterFee.add(adminFee), "Not enough Ether in the contract to process the sell.");
+
+    _burn(msg.sender, tokenAmount);
+    payable(msg.sender).transfer(etherToReturnAfterFee);
+    payable(owner()).transfer(adminFee); // Send 2% fee to the admin
+}
+   
+
+
+    function getTokenPriceInWei() public view returns (uint256) {
+        if (!initialPurchaseMade) {
+            return initialTokenPriceInWei;
+        }
+
+        uint256 etherBalance = address(this).balance.sub(adminFeeBalance);
+        uint256 circulatingSupply = totalSupply().sub(balanceOf(address(this)));
+        if (circulatingSupply == 0) {
+            return initialTokenPriceInWei;
+        }
+
+            return etherBalance.mul(DECIMALS_MULTIPLIER).div(circulatingSupply);
+}
+
+function mint(address to, uint256 amount) public onlyOwner notBlacklisted(to) {
+    _mint(to, amount);
+}
+
+function burn(address from, uint256 amount) public onlyOwner {
+    _burn(from, amount);
+}
+
+function claimReferralReward() public notBlacklisted(msg.sender) {
+    uint256 rewardToClaim = referralRewards[msg.sender];
+    require(rewardToClaim > 0, "No referral rewards to claim.");
+    payable(msg.sender).transfer(rewardToClaim);
+    referralRewards[msg.sender] = 0;
+}
+
+function addToBlacklist(address _address) public onlyOwner {
+    blacklist[_address] = true;
+}
+
+function removeFromBlacklist(address _address) public onlyOwner {
+    blacklist[_address] = false;
+}
+function claimAdminFees() external onlyOwner {
+    require(adminFeeBalance > 0, "No admin fees to claim.");
+    uint256 feesToClaim = adminFeeBalance;
+    adminFeeBalance = 0;
+    payable(msg.sender).transfer(feesToClaim);
+}
+
+
+function transfer(address recipient, uint256 amount) public override notBlacklisted(msg.sender) notBlacklisted(recipient) returns (bool) {
+    require(balanceOf(msg.sender) >= amount, "Not enough tokens to transfer.");
+
+    uint256 transferFee = amount.mul(10).div(100);
+    uint256 amountAfterFee = amount.sub(transferFee);
+    _burn(msg.sender, transferFee);
+    return super.transfer(recipient, amountAfterFee);
+}
+
+function transferFrom(address sender, address recipient, uint256 amount) public override notBlacklisted(sender) notBlacklisted(recipient) returns (bool) {
+    require(balanceOf(sender) >= amount, "Not enough tokens to transfer.");
+
+    uint256 transferFee = amount.mul(10).div(100);
+    uint256 amountAfterFee = amount.sub(transferFee);
+    _burn(sender, transferFee);
+    return super.transferFrom(sender, recipient, amountAfterFee);
+}
+
+function withdrawEther(uint256 amount) external onlyOwner {
+    require(amount <= address(this).balance, "Not enough Ether in the contract to withdraw.");
+    payable(msg.sender).transfer(amount);
+}
+
+function withdrawERC20(address tokenAddress, uint256 tokenAmount) external onlyOwner {
+    IERC20(tokenAddress).transfer(msg.sender, tokenAmount);
+}
+}
